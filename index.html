@@ -16,19 +16,33 @@
         import { getFirestore, collection, addDoc, onSnapshot, query, getDoc, doc, setDoc, updateDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
-        // 全局变量，由 Canvas 环境提供
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // Firebase 配置信息，直接从你的 Firebase 控制台复制
+const firebaseConfig = {
 
-        // Firebase 初始化
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        const storage = getStorage(app);
-        
-        let userId;
-        let currentUserProfile = {};
+  apiKey: "AIzaSyAa7M3ZHSzIzHJ7Mrn4OiR8OLh9kXoKTq0",
+
+  authDomain: "lost-and-found-asap.firebaseapp.com",
+
+  projectId: "lost-and-found-asap",
+
+  storageBucket: "lost-and-found-asap.firebasestorage.app",
+
+  messagingSenderId: "421548021400",
+
+  appId: "1:421548021400:web:c5041e4ca010af31b1a2ed",
+
+  measurementId: "G-Y9Y20DGQKQ"
+
+};
+
+// 在 GitHub Pages 环境中，直接使用匿名认证
+const initialAuthToken = null;
+
+// Firebase 初始化
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const storage = getStorage(app);
 
         // UI 元素引用
         const userDisplay = document.getElementById('user-id-display');
