@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>失物招领应用</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome CDN for icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    
+    <script type="module">
+        // 导入 Firebase SDK 模块
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, getDoc, doc, setDoc, updateDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+
+        // 全局变量，由 Canvas 环境提供
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Firebase 初始化
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const storage = getStorage(app);
+        
+        let userId;
+        let currentUserProfile = {};
+
+        // UI 元素引用
+        const userDisplay = document.getElementById('user-id-display');
+        const nicknameDisplay = document.getElementById('nickname-display');
+        const itemForm = document.getElementById('item-form');
+        const itemsListContainer = document.getElementById('items-list-container');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const toastContainer = document.getElementById('toast-container');
+        const itemDetailModal = document.getElementById('item-detail-modal');
+        const chatModal = document.getElementById('chat-modal');
+        const chatCloseBtn = document.getElementById('chat-close-btn');
+        const chatMessagesContainer = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const chatSendBtn = document.getElementById('chat-send-btn');
+        const detailCloseBtn = document.getElementById('detail-close-btn');
+        const commentInput = document.getElementById('comment-input');
+        const commentSendBtn = document.getElementById('comment-send-btn');
+        const itemImageInput = document.getElementById('item-image');
+        const userProfileModal = document.getElementById('user-profile-modal');
+        const nicknameInput = document.getElementById('nickname-input');
+        const saveProfileBtn = document.getElementById('save-profile-btn');
+        const openProfileBtn = document.getElementById('open-profile-btn');
+        const profileCloseBtn = document.getElementById('profile-close-btn');
+        const markAsFoundBtn = document.getElementById('mark-as-found-btn');
+        
+        // 新增的编辑相关 UI 元素
+        const editItemModal = document.getElementById('edit-item-modal');
+        const editForm = document.getElementById('edit-form');
+        const editCloseBtn = document.getElementById('edit-close-btn');
+        let currentEditingItemId = null;
+
+        let selectedItem = null;
+
+        // 显示通知 Toast
+        const showToast = (message, type = 'success') => {
+            const toast = document.createElement('div');
+            toast.className = `fixed bottom-4 right-4 p-4 rounded-lg shadow-lg flex items-center transition-transform duration-300 transform translate-y-full ${
+                type === 'success' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+            }`;
+            toast.innerHTML = `<i class="fa-solid ${type === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation'} mr-2"></i><span>${message}</span>`;
+            toastContainer.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.transform = 'translateY(0)';
+            }, 10);
+
+            setTimeout(() => {
+                toast.style.transform = 'translateY(150%)';
+                toast.addEventListener('transitionend', () => toast.remove());
+            }, 3000);
+        };
+
+        // 监听 Firebase 认证状态变化
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                userDisplay.textContent = `${userId.substring(0, 8)}...`;
+                setupUserProfileListener();
+                setupRealtimeListeners();
+            } else {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Firebase authentication error:", error);
+                }
+            }
+        });
+
+        // 设置用户资料实时监听器
+        const setupUserProfileListener = () => {
+            const userDocRef = doc(db, `artifacts/${appId}/public/data/users/${userId}`);
+            onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    currentUserProfile = docSnap.data();
+                    nicknameDisplay.textContent = currentUserProfile.nickname;
+                } else {
+                    // 如果用户资料不存在，创建默认资料
+                    currentUserProfile = {
+                        nickname: `用户-${userId.substring(0, 8)}`,
+                        avatarUrl: `https://placehold.co/40x40/cbd5e1/1e293b?text=${userId.substring(0, 1).toUpperCase()}`
+                    };
+                    setDoc(userDocRef, currentUserProfile);
+                    nicknameDisplay.textContent = currentUserProfile.nickname;
+                }
+            });
+        };
+
+        // 设置实时数据监听器
+        const setupRealtimeListeners = () => {
+            // 物品列表监听，只显示状态为 'active' 的物品
+            const itemsQuery = query(collection(db, `artifacts/${appId}/public/data/lostAndFound`), where('status', '==', 'active'));
+            onSnapshot(itemsQuery, (snapshot) => {
+                itemsListContainer.innerHTML = '';
+                loadingIndicator.classList.add('hidden');
+                
+                if (snapshot.empty) {
+                    itemsListContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">目前还没有物品被发布。</p>';
+                } else {
+                    // 在客户端按时间戳降序排序
+                    const sortedDocs = snapshot.docs.sort((a, b) => b.data().timestamp.toDate() - a.data().timestamp.toDate());
+                    sortedDocs.forEach(doc => {
+                        renderItemCard(doc.id, doc.data());
+                    });
+                }
+            }, (error) => {
+                console.error("Error fetching items:", error);
+                showToast('加载物品列表失败。', 'error');
+                loadingIndicator.classList.add('hidden');
+            });
+        };
+
+        // 渲染物品卡片
+        const renderItemCard = (id, item) => {
+            const isOwner = item.ownerId === userId;
+            const card = document.createElement('div');
+            card.className = "bg-white rounded-xl p-4 mb-4 card-shadow hover-lift cursor-pointer relative flex gap-4 items-center";
+            card.onclick = () => showItemDetail(id, item);
+            card.innerHTML = `
+                <div class="w-16 h-16 bg-gray-200 rounded-lg overflow-hidden flex-shrink-0">
+                    <img src="${item.imageUrl || 'https://placehold.co/64x64/cbd5e1/1e293b?text=No+Image'}" alt="物品图片" class="w-full h-full object-cover">
+                </div>
+                <div class="flex-grow">
+                    <p class="text-sm font-bold text-gray-500 mb-1">${item.type === 'lost' ? '丢失物品' : '找到物品'}</p>
+                    <h3 class="text-xl font-semibold">${item.name}</h3>
+                    <p class="text-sm text-gray-600 flex items-center mt-2">
+                        <i class="fa-solid fa-location-dot mr-2 text-gray-500"></i>
+                        ${item.locationDesc || '未指定地点'}
+                    </p>
+                    ${item.reward > 0 ? `<p class="text-sm text-green-600 flex items-center mt-1">
+                        <i class="fa-solid fa-sack-dollar mr-2"></i>
+                        悬赏金额: ${item.reward}元
+                    </p>` : ''}
+                </div>
+                ${isOwner ? `
+                <div class="absolute top-4 right-4 flex gap-2">
+                    <button class="edit-btn bg-yellow-500 text-white py-1 px-3 rounded-md text-sm hover:bg-yellow-600 transition-colors">编辑</button>
+                    <button class="mark-as-found-btn bg-green-500 text-white py-1 px-3 rounded-md text-sm hover:bg-green-600 transition-colors">已找回</button>
+                </div>
+                ` : `
+                <button class="contact-btn absolute top-4 right-4 bg-blue-600 text-white py-1 px-3 rounded-md text-sm hover:bg-blue-700 transition-colors">
+                    联系${item.type === 'lost' ? '失主' : '拾主'}
+                </button>
+                `}
+            `;
+            const contactButton = card.querySelector('.contact-btn');
+            if (contactButton) {
+                contactButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    showChatModal(id, item);
+                });
+            }
+            const editButton = card.querySelector('.edit-btn');
+            if (editButton) {
+                editButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    showEditItemModal(id, item);
+                });
+            }
+            const markFoundButton = card.querySelector('.mark-as-found-btn');
+            if(markFoundButton) {
+                 markFoundButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    markItemAsFound(id);
+                });
+            }
+            itemsListContainer.appendChild(card);
+        };
+
+        // 显示物品详情模态框
+        const showItemDetail = async (id, item) => {
+            selectedItem = { id, ...item };
+            const ownerProfile = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${item.ownerId}`));
+            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId.substring(0, 8);
+            
+            document.getElementById('detail-image').src = item.imageUrl || 'https://placehold.co/250x250/cbd5e1/1e293b?text=No+Image';
+            document.getElementById('detail-title').textContent = item.name;
+            document.getElementById('detail-description').textContent = item.description;
+            document.getElementById('detail-reward').textContent = item.reward > 0 ? `悬赏金额: ${item.reward}元` : '';
+            document.getElementById('detail-owner').textContent = `由 ${ownerNickname} 发布`;
+            
+            // 如果是物品发布者，显示“标记为已找回”按钮和编辑按钮
+            if (item.ownerId === userId) {
+                markAsFoundBtn.classList.remove('hidden');
+                markAsFoundBtn.onclick = () => markItemAsFound(id);
+                document.getElementById('edit-item-btn').classList.remove('hidden');
+                document.getElementById('edit-item-btn').onclick = () => {
+                    itemDetailModal.classList.add('hidden');
+                    showEditItemModal(id, item);
+                };
+            } else {
+                markAsFoundBtn.classList.add('hidden');
+                document.getElementById('edit-item-btn').classList.add('hidden');
+            }
+
+            itemDetailModal.classList.remove('hidden');
+
+            // 设置评论监听器
+            const commentsQuery = query(collection(db, `artifacts/${appId}/public/data/lostAndFound/${id}/comments`));
+            onSnapshot(commentsQuery, async (snapshot) => {
+                const commentsContainer = document.getElementById('comments-container');
+                commentsContainer.innerHTML = '';
+
+                // 在客户端按时间戳降序排序
+                const sortedComments = snapshot.docs.sort((a, b) => a.data().timestamp.toDate() - b.data().timestamp.toDate());
+                
+                if (snapshot.empty) {
+                    commentsContainer.innerHTML = '<p class="text-sm text-gray-500">暂无评论。</p>';
+                } else {
+                    for (const doc of sortedComments) {
+                        const comment = doc.data();
+                        const commentUser = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${comment.userId}`));
+                        const commentNickname = commentUser.exists() ? commentUser.data().nickname : comment.userId.substring(0, 8);
+                        const commentDiv = document.createElement('div');
+                        commentDiv.className = 'p-2 bg-gray-100 rounded-md';
+                        commentDiv.innerHTML = `
+                            <p class="text-sm font-bold text-gray-600">${commentNickname}:</p>
+                            <p class="text-base">${comment.text}</p>
+                        `;
+                        commentsContainer.appendChild(commentDiv);
+                    }
+                }
+            });
+        };
+
+        // 标记物品为已找回
+        const markItemAsFound = async (itemId) => {
+            try {
+                const itemDocRef = doc(db, `artifacts/${appId}/public/data/lostAndFound/${itemId}`);
+                await updateDoc(itemDocRef, {
+                    status: 'found'
+                });
+                itemDetailModal.classList.add('hidden');
+                showToast('物品已成功标记为已找回。');
+            } catch (error) {
+                console.error("Error marking item as found:", error);
+                showToast('标记物品失败。', 'error');
+            }
+        };
+
+        // 显示编辑物品模态框
+        const showEditItemModal = (id, item) => {
+            currentEditingItemId = id;
+            editForm['edit-item-name'].value = item.name;
+            editForm['edit-item-type'].value = item.type;
+            editForm['edit-item-location-desc'].value = item.locationDesc;
+            editForm['edit-description'].value = item.description;
+            editForm['edit-item-reward'].value = item.reward;
+            
+            editItemModal.classList.remove('hidden');
+        };
+
+        // 关闭物品详情模态框
+        detailCloseBtn.onclick = () => {
+            itemDetailModal.classList.add('hidden');
+            selectedItem = null;
+        };
+
+        // 关闭编辑模态框
+        editCloseBtn.onclick = () => {
+            editItemModal.classList.add('hidden');
+            currentEditingItemId = null;
+        };
+
+
+        // 处理添加评论
+        commentSendBtn.onclick = async () => {
+            if (!selectedItem || !commentInput.value.trim()) return;
+            try {
+                const commentsRef = collection(db, `artifacts/${appId}/public/data/lostAndFound/${selectedItem.id}/comments`);
+                await addDoc(commentsRef, {
+                    text: commentInput.value,
+                    userId: userId,
+                    timestamp: new Date()
+                });
+                commentInput.value = '';
+            } catch (error) {
+                console.error("Error adding comment:", error);
+                showToast('添加评论失败。', 'error');
+            }
+        };
+        commentInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') commentSendBtn.click();
+        });
+
+        // 显示聊天模态框
+        const showChatModal = async (id, item) => {
+            selectedItem = { id, ...item };
+            const chatRoomId = [userId, item.ownerId].sort().join('-');
+            const ownerProfile = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${item.ownerId}`));
+            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId.substring(0, 8);
+            
+            document.getElementById('chat-title').textContent = `与 ${ownerNickname} 的聊天`;
+            chatModal.classList.remove('hidden');
+
+            // 聊天消息监听
+            const messagesQuery = query(collection(db, `artifacts/${appId}/public/data/messages/${chatRoomId}/chat`));
+            onSnapshot(messagesQuery, async (snapshot) => {
+                chatMessagesContainer.innerHTML = '';
+                // 在客户端按时间戳降序排序
+                const sortedMessages = snapshot.docs.sort((a, b) => a.data().timestamp.toDate() - b.data().timestamp.toDate());
+                for (const doc of sortedMessages) {
+                    const message = doc.data();
+                    const messageSender = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${message.senderId}`));
+                    const senderNickname = messageSender.exists() ? messageSender.data().nickname : message.senderId.substring(0, 8);
+                    const messageDiv = document.createElement('div');
+                    const isSender = message.senderId === userId;
+                    messageDiv.className = `p-2 rounded-lg max-w-[80%] mb-2 ${isSender ? 'bg-blue-100 self-end ml-auto' : 'bg-gray-100 self-start mr-auto'}`;
+                    messageDiv.innerHTML = `
+                        <p class="font-bold text-xs text-gray-500">${senderNickname}</p>
+                        <p>${message.text}</p>
+                    `;
+                    chatMessagesContainer.appendChild(messageDiv);
+                }
+                chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+            });
+        };
+
+        // 关闭聊天模态框
+        chatCloseBtn.onclick = () => {
+            chatModal.classList.add('hidden');
+            selectedItem = null;
+        };
+
+        // 发送聊天消息
+        chatSendBtn.onclick = async () => {
+            if (!selectedItem || !chatInput.value.trim()) return;
+            const chatRoomId = [userId, selectedItem.ownerId].sort().join('-');
+            try {
+                const chatRoomRef = collection(db, `artifacts/${appId}/public/data/messages/${chatRoomId}/chat`);
+                await addDoc(chatRoomRef, {
+                    senderId: userId,
+                    text: chatInput.value,
+                    timestamp: new Date()
+                });
+                chatInput.value = '';
+            } catch (error) {
+                console.error("Error sending message:", error);
+                showToast('发送消息失败。', 'error');
+            }
+        };
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') chatSendBtn.click();
+        });
+        
+        // 提交新物品表单
+        itemForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const file = itemImageInput.files[0];
+            let imageUrl = '';
+
+            // 新增图片文件大小验证
+            if (file) {
+                const maxSizeInBytes = 2 * 1024 * 1024; // 2MB
+                if (file.size > maxSizeInBytes) {
+                    showToast('图片文件大小不能超过 2MB。', 'error');
+                    return;
+                }
+            }
+
+            try {
+                // 如果有图片，上传到 Firebase Storage
+                if (file) {
+                    const imageRef = ref(storage, `artifacts/${appId}/images/items/${Date.now()}-${file.name}`);
+                    await uploadBytes(imageRef, file);
+                    imageUrl = await getDownloadURL(imageRef);
+                }
+
+                const newItem = {
+                    name: form['item-name'].value,
+                    type: form['item-type'].value,
+                    locationDesc: form['item-location-desc'].value,
+                    description: form['description'].value,
+                    reward: parseFloat(form['item-reward'].value) || 0,
+                    ownerId: userId,
+                    timestamp: new Date(),
+                    imageUrl: imageUrl,
+                    status: 'active' // 物品状态：active 或 found
+                };
+                
+                await addDoc(collection(db, `artifacts/${appId}/public/data/lostAndFound`), newItem);
+                form.reset();
+                showToast('物品已成功发布。');
+            } catch (error) {
+                console.error("Error adding item:", error);
+                showToast('发布物品失败。', 'error');
+            }
+        };
+        
+        // 保存编辑后的物品
+        editForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const file = form['edit-item-image'].files[0];
+            let imageUrl;
+
+            // 新增图片文件大小验证
+            if (file) {
+                const maxSizeInBytes = 2 * 1024 * 1024; // 2MB
+                if (file.size > maxSizeInBytes) {
+                    showToast('图片文件大小不能超过 2MB。', 'error');
+                    return;
+                }
+            }
+            
+            try {
+                // 如果用户上传了新图片，则上传并获取 URL
+                if (file) {
+                    const imageRef = ref(storage, `artifacts/${appId}/images/items/${Date.now()}-${file.name}`);
+                    await uploadBytes(imageRef, file);
+                    imageUrl = await getDownloadURL(imageRef);
+                }
+
+                // 创建更新对象
+                const updatedItem = {
+                    name: form['edit-item-name'].value,
+                    type: form['edit-item-type'].value,
+                    locationDesc: form['edit-item-location-desc'].value,
+                    description: form['edit-description'].value,
+                    reward: parseFloat(form['edit-item-reward'].value) || 0
+                };
+
+                // 如果有新图片，更新 imageUrl
+                if (imageUrl) {
+                    updatedItem.imageUrl = imageUrl;
+                }
+
+                const itemDocRef = doc(db, `artifacts/${appId}/public/data/lostAndFound/${currentEditingItemId}`);
+                await updateDoc(itemDocRef, updatedItem);
+
+                editItemModal.classList.add('hidden');
+                currentEditingItemId = null;
+                showToast('物品已成功更新。');
+            } catch (error) {
+                console.error("Error updating item:", error);
+                showToast('更新物品失败。', 'error');
+            }
+        };
+
+
+        // 打开/关闭用户资料编辑模态框
+        openProfileBtn.onclick = () => {
+            if (currentUserProfile) {
+                nicknameInput.value = currentUserProfile.nickname;
+            }
+            userProfileModal.classList.remove('hidden');
+        };
+        profileCloseBtn.onclick = () => {
+            userProfileModal.classList.add('hidden');
+        };
+
+        // 保存用户资料
+        saveProfileBtn.onclick = async () => {
+            const newNickname = nicknameInput.value.trim();
+            if (newNickname && newNickname !== currentUserProfile.nickname) {
+                try {
+                    const userDocRef = doc(db, `artifacts/${appId}/public/data/users/${userId}`);
+                    await updateDoc(userDocRef, {
+                        nickname: newNickname
+                    });
+                    showToast('昵称已更新。');
+                    userProfileModal.classList.add('hidden');
+                } catch (error) {
+                    console.error("Error updating nickname:", error);
+                    showToast('更新昵称失败。', 'error');
+                }
+            } else {
+                userProfileModal.classList.add('hidden');
+            }
+        };
+    </script>
+    <style>
+        /* 自定义样式 */
+        .card-shadow { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .hover-lift { transition: transform 0.2s, box-shadow 0.2s; }
+        .hover-lift:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans">
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <!-- 顶部标题和用户信息 -->
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+            <h1 class="text-3xl font-bold text-gray-800">失物招领</h1>
+            <div class="flex items-center gap-2">
+                <button id="open-profile-btn" class="bg-blue-600 text-white text-sm py-2 px-4 rounded-full hover:bg-blue-700 transition-colors">
+                    <span id="nickname-display">加载中...</span>
+                </button>
+                <div class="bg-gray-200 text-sm p-2 rounded-lg">
+                    您的用户ID: <span id="user-id-display" class="font-mono font-bold text-blue-600">加载中...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 发布新物品卡片 -->
+        <div class="bg-white rounded-xl p-6 mb-8 card-shadow hover-lift">
+            <h2 class="text-xl font-bold mb-2">发布新物品</h2>
+            <p class="text-gray-600 mb-4">发布您丢失或找到的物品，并可选悬赏金额和图片。</p>
+            <form id="item-form" class="space-y-4">
+                <input name="item-name" type="text" placeholder="物品名称" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500" required>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <select name="item-type" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="lost">丢失</option>
+                        <option value="found">找到</option>
+                    </select>
+                    <input name="item-location-desc" type="text" placeholder="地点描述" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <textarea name="description" placeholder="详细描述" rows="3" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500" required></textarea>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input name="item-reward" type="number" placeholder="悬赏金额 (元)" min="0" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    <label class="block">
+                        <span class="sr-only">选择图片</span>
+                        <input id="item-image" type="file" accept="image/*" class="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-md file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-blue-50 file:text-blue-700
+                          hover:file:bg-blue-100
+                        "/>
+                    </label>
+                </div>
+                <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">发布</button>
+            </form>
+        </div>
+
+        <!-- 已发布物品列表 -->
+        <h2 class="text-2xl font-bold mb-4">已发布的物品</h2>
+        <div id="loading-indicator" class="flex items-center justify-center p-8">
+            <i class="fa-solid fa-spinner fa-spin text-4xl text-gray-400"></i>
+            <span class="ml-4 text-gray-500">加载中...</span>
+        </div>
+        <div id="items-list-container">
+            <!-- 物品卡片将由 JS 动态渲染 -->
+        </div>
+    </div>
+    
+    <!-- 物品详情模态框 -->
+    <div id="item-detail-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div class="p-6 border-b flex justify-between items-center">
+                <div class="flex-grow">
+                    <img id="detail-image" src="" alt="物品图片" class="w-full h-auto mb-4 rounded-lg">
+                    <h3 id="detail-title" class="text-xl font-bold"></h3>
+                    <p id="detail-reward" class="text-sm font-normal text-green-600"></p>
+                    <p id="detail-owner" class="text-sm text-gray-500 mt-1"></p>
+                    <p id="detail-description" class="text-base text-gray-800 mt-4"></p>
+                    <div class="flex gap-2 mt-4">
+                        <button id="mark-as-found-btn" class="bg-green-500 text-white py-2 px-4 rounded-md hover:bg-green-600 transition-colors hidden">
+                            <i class="fa-solid fa-check-circle mr-2"></i>标记为已找回
+                        </button>
+                        <button id="edit-item-btn" class="bg-yellow-500 text-white py-2 px-4 rounded-md hover:bg-yellow-600 transition-colors hidden">
+                            <i class="fa-solid fa-edit mr-2"></i>编辑
+                        </button>
+                    </div>
+                </div>
+                <button id="detail-close-btn" class="text-gray-500 hover:text-gray-800 transition-colors ml-4">
+                    <i class="fa-solid fa-times text-xl"></i>
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <h4 class="text-lg font-semibold">评论</h4>
+                    <div id="comments-container" class="mt-2 space-y-2 max-h-48 overflow-y-auto">
+                        <!-- 评论将由 JS 动态渲染 -->
+                    </div>
+                    <div class="flex mt-4 space-x-2">
+                        <input id="comment-input" type="text" placeholder="添加评论..." class="flex-grow p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <button id="comment-send-btn" class="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 聊天对话框 -->
+    <div id="chat-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl w-full max-w-md">
+            <div class="p-4 border-b flex justify-between items-center">
+                <div>
+                    <h3 id="chat-title" class="text-lg font-bold"></h3>
+                    <p class="text-sm text-gray-500">这是一个私密对话，请勿泄露个人信息。</p>
+                </div>
+                <button id="chat-close-btn" class="text-gray-500 hover:text-gray-800 transition-colors">
+                    <i class="fa-solid fa-times text-xl"></i>
+                </button>
+            </div>
+            <div id="chat-messages" class="p-4 h-64 overflow-y-auto flex flex-col">
+                <!-- 聊天消息将由 JS 动态渲染 -->
+            </div>
+            <div class="p-4 border-t flex gap-2">
+                <input id="chat-input" type="text" placeholder="输入消息..." class="flex-grow p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                <button id="chat-send-btn" class="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 用户资料编辑模态框 -->
+    <div id="user-profile-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl w-full max-w-sm p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold">编辑您的资料</h3>
+                <button id="profile-close-btn" class="text-gray-500 hover:text-gray-800 transition-colors">
+                    <i class="fa-solid fa-times text-xl"></i>
+                </button>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-gray-700 font-bold mb-2">昵称</label>
+                    <input id="nickname-input" type="text" placeholder="输入您的昵称" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <button id="save-profile-btn" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 物品编辑模态框（新增） -->
+    <div id="edit-item-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold">编辑物品</h3>
+                <button id="edit-close-btn" class="text-gray-500 hover:text-gray-800 transition-colors">
+                    <i class="fa-solid fa-times text-xl"></i>
+                </button>
+            </div>
+            <form id="edit-form" class="space-y-4">
+                <input name="edit-item-name" type="text" placeholder="物品名称" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500" required>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <select name="edit-item-type" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="lost">丢失</option>
+                        <option value="found">找到</option>
+                    </select>
+                    <input name="edit-item-location-desc" type="text" placeholder="地点描述" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <textarea name="edit-description" placeholder="详细描述" rows="3" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500" required></textarea>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input name="edit-item-reward" type="number" placeholder="悬赏金额 (元)" min="0" class="p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    <label class="block">
+                        <span class="sr-only">选择新图片 (可选)</span>
+                        <input name="edit-item-image" type="file" accept="image/*" class="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-md file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-yellow-50 file:text-yellow-700
+                          hover:file:bg-yellow-100
+                        "/>
+                    </label>
+                </div>
+                <button type="submit" class="w-full bg-yellow-500 text-white py-2 px-4 rounded-md hover:bg-yellow-600 transition-colors">保存更改</button>
+            </form>
+        </div>
+    </div>
+
+
+    <!-- 通知提示容器 -->
+    <div id="toast-container"></div>
+</body>
+</html>
