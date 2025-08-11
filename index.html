@@ -16,33 +16,19 @@
         import { getFirestore, collection, addDoc, onSnapshot, query, getDoc, doc, setDoc, updateDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
-        // Firebase 配置信息，直接从你的 Firebase 控制台复制
-const firebaseConfig = {
+        // 从画布环境中获取 Firebase 配置和认证令牌
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-  apiKey: "AIzaSyAa7M3ZHSzIzHJ7Mrn4OiR8OLh9kXoKTq0",
-
-  authDomain: "lost-and-found-asap.firebaseapp.com",
-
-  projectId: "lost-and-found-asap",
-
-  storageBucket: "lost-and-found-asap.firebasestorage.app",
-
-  messagingSenderId: "421548021400",
-
-  appId: "1:421548021400:web:c5041e4ca010af31b1a2ed",
-
-  measurementId: "G-Y9Y20DGQKQ"
-
-};
-
-// 在 GitHub Pages 环境中，直接使用匿名认证
-const initialAuthToken = null;
-
-// Firebase 初始化
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
-const storage = getStorage(app);
+        // Firebase 初始化
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const storage = getStorage(app);
+        
+        let userId;
+        let currentUserProfile = {};
 
         // UI 元素引用
         const userDisplay = document.getElementById('user-id-display');
@@ -68,7 +54,6 @@ const storage = getStorage(app);
         const profileCloseBtn = document.getElementById('profile-close-btn');
         const markAsFoundBtn = document.getElementById('mark-as-found-btn');
         
-        // 新增的编辑相关 UI 元素
         const editItemModal = document.getElementById('edit-item-modal');
         const editForm = document.getElementById('edit-form');
         const editCloseBtn = document.getElementById('edit-close-btn');
@@ -145,7 +130,6 @@ const storage = getStorage(app);
                 if (snapshot.empty) {
                     itemsListContainer.innerHTML = '<p class="text-center text-gray-500 mt-8">目前还没有物品被发布。</p>';
                 } else {
-                    // 在客户端按时间戳降序排序
                     const sortedDocs = snapshot.docs.sort((a, b) => b.data().timestamp.toDate() - a.data().timestamp.toDate());
                     sortedDocs.forEach(doc => {
                         renderItemCard(doc.id, doc.data());
@@ -227,7 +211,6 @@ const storage = getStorage(app);
             document.getElementById('detail-reward').textContent = item.reward > 0 ? `悬赏金额: ${item.reward}元` : '';
             document.getElementById('detail-owner').textContent = `由 ${ownerNickname} 发布`;
             
-            // 如果是物品发布者，显示“标记为已找回”按钮和编辑按钮
             if (item.ownerId === userId) {
                 markAsFoundBtn.classList.remove('hidden');
                 markAsFoundBtn.onclick = () => markItemAsFound(id);
@@ -243,13 +226,11 @@ const storage = getStorage(app);
 
             itemDetailModal.classList.remove('hidden');
 
-            // 设置评论监听器
             const commentsQuery = query(collection(db, `artifacts/${appId}/public/data/lostAndFound/${id}/comments`));
             onSnapshot(commentsQuery, async (snapshot) => {
                 const commentsContainer = document.getElementById('comments-container');
                 commentsContainer.innerHTML = '';
 
-                // 在客户端按时间戳降序排序
                 const sortedComments = snapshot.docs.sort((a, b) => a.data().timestamp.toDate() - b.data().timestamp.toDate());
                 
                 if (snapshot.empty) {
@@ -341,11 +322,9 @@ const storage = getStorage(app);
             document.getElementById('chat-title').textContent = `与 ${ownerNickname} 的聊天`;
             chatModal.classList.remove('hidden');
 
-            // 聊天消息监听
             const messagesQuery = query(collection(db, `artifacts/${appId}/public/data/messages/${chatRoomId}/chat`));
             onSnapshot(messagesQuery, async (snapshot) => {
                 chatMessagesContainer.innerHTML = '';
-                // 在客户端按时间戳降序排序
                 const sortedMessages = snapshot.docs.sort((a, b) => a.data().timestamp.toDate() - b.data().timestamp.toDate());
                 for (const doc of sortedMessages) {
                     const message = doc.data();
@@ -398,7 +377,6 @@ const storage = getStorage(app);
             const file = itemImageInput.files[0];
             let imageUrl = '';
 
-            // 新增图片文件大小验证
             if (file) {
                 const maxSizeInBytes = 2 * 1024 * 1024; // 2MB
                 if (file.size > maxSizeInBytes) {
@@ -408,7 +386,6 @@ const storage = getStorage(app);
             }
 
             try {
-                // 如果有图片，上传到 Firebase Storage
                 if (file) {
                     const imageRef = ref(storage, `artifacts/${appId}/images/items/${Date.now()}-${file.name}`);
                     await uploadBytes(imageRef, file);
@@ -424,7 +401,7 @@ const storage = getStorage(app);
                     ownerId: userId,
                     timestamp: new Date(),
                     imageUrl: imageUrl,
-                    status: 'active' // 物品状态：active 或 found
+                    status: 'active'
                 };
                 
                 await addDoc(collection(db, `artifacts/${appId}/public/data/lostAndFound`), newItem);
@@ -443,7 +420,6 @@ const storage = getStorage(app);
             const file = form['edit-item-image'].files[0];
             let imageUrl;
 
-            // 新增图片文件大小验证
             if (file) {
                 const maxSizeInBytes = 2 * 1024 * 1024; // 2MB
                 if (file.size > maxSizeInBytes) {
@@ -453,14 +429,12 @@ const storage = getStorage(app);
             }
             
             try {
-                // 如果用户上传了新图片，则上传并获取 URL
                 if (file) {
                     const imageRef = ref(storage, `artifacts/${appId}/images/items/${Date.now()}-${file.name}`);
                     await uploadBytes(imageRef, file);
                     imageUrl = await getDownloadURL(imageRef);
                 }
 
-                // 创建更新对象
                 const updatedItem = {
                     name: form['edit-item-name'].value,
                     type: form['edit-item-type'].value,
@@ -469,7 +443,6 @@ const storage = getStorage(app);
                     reward: parseFloat(form['edit-item-reward'].value) || 0
                 };
 
-                // 如果有新图片，更新 imageUrl
                 if (imageUrl) {
                     updatedItem.imageUrl = imageUrl;
                 }
