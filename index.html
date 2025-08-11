@@ -10,18 +10,18 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
     
     <script type="module">
-        // 导入 Firebase SDK 模块
+        // Import Firebase SDK modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, getDoc, doc, setDoc, updateDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
-        // 从画布环境中获取 Firebase 配置和认证令牌
+        // Get Firebase config and auth token from the Canvas environment
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-        // Firebase 初始化
+        // Firebase initialization
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
@@ -29,8 +29,9 @@
         
         let userId;
         let currentUserProfile = {};
+        let isAuthReady = false;
 
-        // UI 元素引用
+        // UI element references
         const userDisplay = document.getElementById('user-id-display');
         const nicknameDisplay = document.getElementById('nickname-display');
         const itemForm = document.getElementById('item-form');
@@ -61,7 +62,7 @@
 
         let selectedItem = null;
 
-        // 显示通知 Toast
+        // Display a toast notification
         const showToast = (message, type = 'success') => {
             const toast = document.createElement('div');
             toast.className = `fixed bottom-4 right-4 p-4 rounded-lg shadow-lg flex items-center transition-transform duration-300 transform translate-y-full ${
@@ -80,11 +81,13 @@
             }, 3000);
         };
 
-        // 监听 Firebase 认证状态变化
+        // Listen for Firebase auth state changes
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 userId = user.uid;
-                userDisplay.textContent = `${userId.substring(0, 8)}...`;
+                // Display the full user ID as per collaborative app requirements
+                userDisplay.textContent = userId;
+                isAuthReady = true;
                 setupUserProfileListener();
                 setupRealtimeListeners();
             } else {
@@ -100,7 +103,7 @@
             }
         });
 
-        // 设置用户资料实时监听器
+        // Set up the user profile real-time listener
         const setupUserProfileListener = () => {
             const userDocRef = doc(db, `artifacts/${appId}/public/data/users/${userId}`);
             onSnapshot(userDocRef, (docSnap) => {
@@ -108,7 +111,7 @@
                     currentUserProfile = docSnap.data();
                     nicknameDisplay.textContent = currentUserProfile.nickname;
                 } else {
-                    // 如果用户资料不存在，创建默认资料
+                    // If the user profile does not exist, create a default one
                     currentUserProfile = {
                         nickname: `用户-${userId.substring(0, 8)}`,
                         avatarUrl: `https://placehold.co/40x40/cbd5e1/1e293b?text=${userId.substring(0, 1).toUpperCase()}`
@@ -119,9 +122,9 @@
             });
         };
 
-        // 设置实时数据监听器
+        // Set up the real-time data listeners
         const setupRealtimeListeners = () => {
-            // 物品列表监听，只显示状态为 'active' 的物品
+            // Listen for lost and found items with 'active' status
             const itemsQuery = query(collection(db, `artifacts/${appId}/public/data/lostAndFound`), where('status', '==', 'active'));
             onSnapshot(itemsQuery, (snapshot) => {
                 itemsListContainer.innerHTML = '';
@@ -142,7 +145,7 @@
             });
         };
 
-        // 渲染物品卡片
+        // Render an item card
         const renderItemCard = (id, item) => {
             const isOwner = item.ownerId === userId;
             const card = document.createElement('div');
@@ -199,11 +202,11 @@
             itemsListContainer.appendChild(card);
         };
 
-        // 显示物品详情模态框
+        // Show item detail modal
         const showItemDetail = async (id, item) => {
             selectedItem = { id, ...item };
             const ownerProfile = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${item.ownerId}`));
-            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId.substring(0, 8);
+            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId; // Display full user ID
             
             document.getElementById('detail-image').src = item.imageUrl || 'https://placehold.co/250x250/cbd5e1/1e293b?text=No+Image';
             document.getElementById('detail-title').textContent = item.name;
@@ -239,7 +242,7 @@
                     for (const doc of sortedComments) {
                         const comment = doc.data();
                         const commentUser = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${comment.userId}`));
-                        const commentNickname = commentUser.exists() ? commentUser.data().nickname : comment.userId.substring(0, 8);
+                        const commentNickname = commentUser.exists() ? commentUser.data().nickname : comment.userId; // Display full user ID
                         const commentDiv = document.createElement('div');
                         commentDiv.className = 'p-2 bg-gray-100 rounded-md';
                         commentDiv.innerHTML = `
@@ -252,7 +255,7 @@
             });
         };
 
-        // 标记物品为已找回
+        // Mark item as found
         const markItemAsFound = async (itemId) => {
             try {
                 const itemDocRef = doc(db, `artifacts/${appId}/public/data/lostAndFound/${itemId}`);
@@ -267,7 +270,7 @@
             }
         };
 
-        // 显示编辑物品模态框
+        // Show edit item modal
         const showEditItemModal = (id, item) => {
             currentEditingItemId = id;
             editForm['edit-item-name'].value = item.name;
@@ -279,20 +282,20 @@
             editItemModal.classList.remove('hidden');
         };
 
-        // 关闭物品详情模态框
+        // Close item detail modal
         detailCloseBtn.onclick = () => {
             itemDetailModal.classList.add('hidden');
             selectedItem = null;
         };
 
-        // 关闭编辑模态框
+        // Close edit modal
         editCloseBtn.onclick = () => {
             editItemModal.classList.add('hidden');
             currentEditingItemId = null;
         };
 
 
-        // 处理添加评论
+        // Handle adding comments
         commentSendBtn.onclick = async () => {
             if (!selectedItem || !commentInput.value.trim()) return;
             try {
@@ -312,12 +315,12 @@
           if (e.key === 'Enter') commentSendBtn.click();
         });
 
-        // 显示聊天模态框
+        // Show chat modal
         const showChatModal = async (id, item) => {
             selectedItem = { id, ...item };
             const chatRoomId = [userId, item.ownerId].sort().join('-');
             const ownerProfile = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${item.ownerId}`));
-            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId.substring(0, 8);
+            const ownerNickname = ownerProfile.exists() ? ownerProfile.data().nickname : item.ownerId; // Display full user ID
             
             document.getElementById('chat-title').textContent = `与 ${ownerNickname} 的聊天`;
             chatModal.classList.remove('hidden');
@@ -329,7 +332,7 @@
                 for (const doc of sortedMessages) {
                     const message = doc.data();
                     const messageSender = await getDoc(doc(db, `artifacts/${appId}/public/data/users/${message.senderId}`));
-                    const senderNickname = messageSender.exists() ? messageSender.data().nickname : message.senderId.substring(0, 8);
+                    const senderNickname = messageSender.exists() ? messageSender.data().nickname : message.senderId; // Display full user ID
                     const messageDiv = document.createElement('div');
                     const isSender = message.senderId === userId;
                     messageDiv.className = `p-2 rounded-lg max-w-[80%] mb-2 ${isSender ? 'bg-blue-100 self-end ml-auto' : 'bg-gray-100 self-start mr-auto'}`;
@@ -343,13 +346,13 @@
             });
         };
 
-        // 关闭聊天模态框
+        // Close chat modal
         chatCloseBtn.onclick = () => {
             chatModal.classList.add('hidden');
             selectedItem = null;
         };
 
-        // 发送聊天消息
+        // Send a chat message
         chatSendBtn.onclick = async () => {
             if (!selectedItem || !chatInput.value.trim()) return;
             const chatRoomId = [userId, selectedItem.ownerId].sort().join('-');
@@ -370,7 +373,7 @@
             if (e.key === 'Enter') chatSendBtn.click();
         });
         
-        // 提交新物品表单
+        // Handle submitting the new item form
         itemForm.onsubmit = async (e) => {
             e.preventDefault();
             const form = e.target;
@@ -413,7 +416,7 @@
             }
         };
         
-        // 保存编辑后的物品
+        // Save the edited item
         editForm.onsubmit = async (e) => {
             e.preventDefault();
             const form = e.target;
@@ -460,7 +463,7 @@
         };
 
 
-        // 打开/关闭用户资料编辑模态框
+        // Open/close user profile edit modal
         openProfileBtn.onclick = () => {
             if (currentUserProfile) {
                 nicknameInput.value = currentUserProfile.nickname;
@@ -471,7 +474,7 @@
             userProfileModal.classList.add('hidden');
         };
 
-        // 保存用户资料
+        // Save user profile
         saveProfileBtn.onclick = async () => {
             const newNickname = nicknameInput.value.trim();
             if (newNickname && newNickname !== currentUserProfile.nickname) {
@@ -492,28 +495,28 @@
         };
     </script>
     <style>
-        /* 自定义样式 */
-        .card-shadow { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        /* Custom styles */
+        .card-shadow { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.05); }
         .hover-lift { transition: transform 0.2s, box-shadow 0.2s; }
         .hover-lift:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen font-sans">
     <div class="max-w-4xl mx-auto px-4 py-8">
-        <!-- 顶部标题和用户信息 -->
+        <!-- Top title and user info -->
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
             <h1 class="text-3xl font-bold text-gray-800">失物招领</h1>
             <div class="flex items-center gap-2">
                 <button id="open-profile-btn" class="bg-blue-600 text-white text-sm py-2 px-4 rounded-full hover:bg-blue-700 transition-colors">
                     <span id="nickname-display">加载中...</span>
                 </button>
-                <div class="bg-gray-200 text-sm p-2 rounded-lg">
+                <div class="bg-gray-200 text-sm p-2 rounded-lg break-all">
                     您的用户ID: <span id="user-id-display" class="font-mono font-bold text-blue-600">加载中...</span>
                 </div>
             </div>
         </div>
 
-        <!-- 发布新物品卡片 -->
+        <!-- Post new item card -->
         <div class="bg-white rounded-xl p-6 mb-8 card-shadow hover-lift">
             <h2 class="text-xl font-bold mb-2">发布新物品</h2>
             <p class="text-gray-600 mb-4">发布您丢失或找到的物品，并可选悬赏金额和图片。</p>
@@ -544,18 +547,18 @@
             </form>
         </div>
 
-        <!-- 已发布物品列表 -->
+        <!-- Posted items list -->
         <h2 class="text-2xl font-bold mb-4">已发布的物品</h2>
         <div id="loading-indicator" class="flex items-center justify-center p-8">
             <i class="fa-solid fa-spinner fa-spin text-4xl text-gray-400"></i>
             <span class="ml-4 text-gray-500">加载中...</span>
         </div>
         <div id="items-list-container">
-            <!-- 物品卡片将由 JS 动态渲染 -->
+            <!-- Item cards will be rendered here by JS -->
         </div>
     </div>
     
-    <!-- 物品详情模态框 -->
+    <!-- Item detail modal -->
     <div id="item-detail-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div class="p-6 border-b flex justify-between items-center">
@@ -582,7 +585,7 @@
                 <div>
                     <h4 class="text-lg font-semibold">评论</h4>
                     <div id="comments-container" class="mt-2 space-y-2 max-h-48 overflow-y-auto">
-                        <!-- 评论将由 JS 动态渲染 -->
+                        <!-- Comments will be rendered here by JS -->
                     </div>
                     <div class="flex mt-4 space-x-2">
                         <input id="comment-input" type="text" placeholder="添加评论..." class="flex-grow p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
@@ -593,7 +596,7 @@
         </div>
     </div>
 
-    <!-- 聊天对话框 -->
+    <!-- Chat modal -->
     <div id="chat-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-white rounded-xl w-full max-w-md">
             <div class="p-4 border-b flex justify-between items-center">
@@ -606,7 +609,7 @@
                 </button>
             </div>
             <div id="chat-messages" class="p-4 h-64 overflow-y-auto flex flex-col">
-                <!-- 聊天消息将由 JS 动态渲染 -->
+                <!-- Chat messages will be rendered here by JS -->
             </div>
             <div class="p-4 border-t flex gap-2">
                 <input id="chat-input" type="text" placeholder="输入消息..." class="flex-grow p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
@@ -615,7 +618,7 @@
         </div>
     </div>
 
-    <!-- 用户资料编辑模态框 -->
+    <!-- User profile edit modal -->
     <div id="user-profile-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-white rounded-xl w-full max-w-sm p-6">
             <div class="flex justify-between items-center mb-4">
@@ -634,7 +637,7 @@
         </div>
     </div>
 
-    <!-- 物品编辑模态框（新增） -->
+    <!-- Item edit modal -->
     <div id="edit-item-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
             <div class="flex justify-between items-center mb-4">
@@ -672,7 +675,7 @@
     </div>
 
 
-    <!-- 通知提示容器 -->
+    <!-- Toast notification container -->
     <div id="toast-container"></div>
 </body>
 </html>
